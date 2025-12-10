@@ -1,0 +1,960 @@
+---
+title: "Projeto2"
+author: "João Cruz"
+date: "2025-11-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# 1. Data Generation
+
+
+```{r}
+rm(list=ls())
+```
+
+n - number of individuals
+p - number of biomarkers
+seed - fixed on number 1
+
+
+```{r}
+set.seed(1)
+n <- 100 + sample(1:20, size = 1); n
+p <- 15 + sample(1:3, size = 1); p
+cat("Individuals:", n, "\nBiomarkers:", p, "\n")
+```
+
+```{r}
+n_normal <- round(0.50 * p)
+n_lognormal <- round(0.25 * p)
+n_gamma <- p - n_normal - n_lognormal # garante que soma = p
+```
+
+```{r}
+#cria uma lista ordenada
+
+dist_vec <- c(rep("normal", n_normal),
+              rep("lognormal", n_lognormal),
+              rep("gamma", n_gamma))
+```
+
+
+criar uma matriz n × p com colunas simuladas com uma distribuição diferente.
+
+```{r}
+set.seed(1)
+dados <- matrix(NA, n, p)
+
+for (j in 1:p) {
+  
+  if (dist_vec[j] == "normal") {
+    dados[, j] <- rnorm(n, mean = 50, sd = 10)
+    
+  } else if (dist_vec[j] == "lognormal") {
+    dados[, j] <- rlnorm(n, meanlog = 3.5, sdlog = 0.5)
+    
+  } else if (dist_vec[j] == "gamma") {
+    dados[, j] <- rgamma(n, shape = 4, scale = 10)
+  }
+}
+```
+
+Como o conjunto de biomarcadores não corresponde a variáveis reais específicas, optámos por simular diferentes comportamentos estatísticos frequentemente observados em dados biomédicos.
+
+Alguns biomarcadores foram gerados com distribuição Normal, adequada para variáveis contínuas com flutuações simétricas em torno de um valor fisiológico típico.
+
+Outros seguem distribuições Log-normal e Gamma, adequadas para medições positivas e assimétricas, comuns em concentrações, taxas ou quantidades biológicas.
+
+Esta diversidade de distribuições permite simular um cenário realista e robusto, adequado para testar os métodos de cálculo e otimização pedidos no trabalho.
+
+```{r}
+# 5. Introdução de Missing Values (entre 5% e 10%)
+set.seed(1)
+
+prop_na <- runif(1, 0.05, 0.10) #um valor entre 5 e 10%
+num_na <- round(n * p * prop_na) #quantos transformados em NA com round para arrendondar para o número inteiro mais proximo
+
+na_positions <- arrayInd(sample(n * p, num_na), .dim = c(n, p))
+dados[na_positions] <- NA
+
+cat("Missing values introduzidos:", num_na, "\n")
+```
+
+```{r}
+dados <- as.data.frame(dados)
+colnames(dados) <- paste0("Bio", 1:p)
+```
+
+
+```{r}
+saveRDS(dados, "dados_biomarcadores.rds")
+```
+
+
+
+
+
+# 2. Base Function with Loops ---------------------------------------------------
+
+
+```{r}
+dados <- readRDS("dados_biomarcadores.rds")
+```
+
+
+```{r}
+calc_similarity_loops <- function(dados) {
+  n <- nrow(dados)
+  p <- ncol(dados)
+  S <- matrix(NA, n, n)
+
+  for (i in 1:n) {
+    for (j in 1:n) {
+
+      dist_ij <- 0
+      num <- 0
+      den_x <- 0
+      den_y <- 0
+      mean_dif_sum <- 0
+      count_ij <- 0
+      
+      # calcular médias 
+      xi_mean <- mean(as.numeric(dados[i, ]), na.rm = TRUE)
+      xj_mean <- mean(as.numeric(dados[j, ]), na.rm = TRUE)
+      threshold_ij <- (xi_mean + xj_mean) / 2
+
+      for (k in 1:p) {
+        xi <- dados[i, k]
+        xj <- dados[j, k]
+
+        if (is.na(xi) || is.na(xj)) next
+
+        # Distância euclidiana (soma manual)
+        dist_ij <- dist_ij + (xi - xj)^2
+
+        # Correlação manual
+        num <- num + (xi - xi_mean) * (xj - xj_mean)
+        den_x <- den_x + (xi - xi_mean)^2
+        den_y <- den_y + (xj - xj_mean)^2
+
+        # Diferença absoluta
+        mean_dif_sum <- mean_dif_sum + abs(xi - xj)
+
+        # Contagem
+        if (xi > threshold_ij && xj > threshold_ij) {
+          count_ij <- count_ij + 1
+        }
+      }
+
+      dist_ij <- sqrt(dist_ij)
+
+      denom <- sqrt(den_x) * sqrt(den_y)
+      corr_ij <- ifelse(denom == 0, NA, num / denom)
+
+      # média das diferenças absolutas 
+      mean_dif_ij <- mean_dif_sum / p
+
+      S[i, j] <- (dist_ij + abs(corr_ij) + mean_dif_ij) / (count_ij + 1)
+    }
+  }
+
+  return(S)
+}
+
+```
+
+
+```{r}
+matrix.loop <- calc_similarity_loops(dados)
+```
+
+
+
+
+
+
+Tratamento de valores em falta (NA): No conjunto de dados gerado, foi introduzida uma proporção entre 5% e 10% de valores em falta. Para o cálculo dos indicadores de similaridade, optámos por ignorar os valores em falta (na.rm = TRUE), utilizando apenas a informação disponível em cada par de indivíduos. Esta abordagem é simples, evita imputações artificiais e garante que os resultados refletem apenas os dados observados. Nos casos em que não existe variabilidade suficiente (por exemplo, indivíduos com todos os valores iguais ou apenas valores em falta), o índice é devolvido como NA, representando a incerteza da medida. Alternativamente, poderiam ser consideradas estratégias como imputação pela média ou mediana dos biomarcadores, imputação baseada em modelos estatísticos (regressão, kNN), ou mesmo imputação múltipla, que reflete a incerteza dos valores em falta. No entanto, para este trabalho, a opção de ignorar os NA mostrou-se adequada, equilibrando simplicidade e robustez.
+
+
+O tempo de computação é muito demorado, demorando cerca de 30 segundos para computar as funções apenas para as primeiras 300 observaçoes (de um total de 50000).
+
+
+# 3. Vectorization of the Function ----------------------------------------------
+
+
+Completamente vetorizado:
+```{r}
+calc_similarity_vectorized <- function(dados) {
+  n <- nrow(dados)
+  p <- ncol(dados)
+  X <- as.matrix(dados)
+  
+  # médias por indivíduo
+  row_means <- rowMeans(X, na.rm = TRUE)
+  
+  ## 1. Distância Euclidiana
+  sq <- rowSums(X^2, na.rm = TRUE)
+  cross <- X %*% t(X)
+  dist_sq <- outer(sq, sq, "+") - 2 * cross
+  dist_sq[dist_sq < 0] <- 0
+  dist_mat <- sqrt(dist_sq)
+  
+  ## 2. Correlação de Pearson
+  X_centered <- sweep(X, 1, row_means)
+  cov_mat <- X_centered %*% t(X_centered)
+  sd_vec <- sqrt(rowSums(X_centered^2, na.rm = TRUE))
+  denom <- outer(sd_vec, sd_vec, "*")
+  corr_mat <- cov_mat / denom
+  corr_mat[denom == 0] <- NA
+  
+  ## 3. Média das diferenças absolutas (versão vetorizada correta)
+  Xi <- array(X, c(n, 1, p))          # (n,1,p)
+  Xj <- array(X, c(1, n, p))          # (1,n,p)
+  
+  # replicação explícita para broadcast
+  Xi_exp <- Xi[, rep(1, n), , drop = FALSE]   # (n,n,p)
+  Xj_exp <- Xj[rep(1, n), , , drop = FALSE]   # (n,n,p)
+  
+  diffs_abs <- abs(Xi_exp - Xj_exp)
+  diffs_abs[is.na(diffs_abs)] <- NA
+  mean_dif_mat <- apply(diffs_abs, c(1, 2), mean, na.rm = TRUE)
+  
+  ## 4. Contagem acima do limiar 
+  threshold_mat <- outer(row_means, row_means, function(a,b) (a + b)/2)
+  
+  thresh_array <- array(threshold_mat, c(n, n, p))
+  
+  Xi2 <- Xi_exp
+  Xj2 <- Xj_exp
+  
+  count_mat <- apply((Xi2 > thresh_array & Xj2 > thresh_array),
+                     c(1,2), sum, na.rm = TRUE)
+  
+  ## 5. Índice composto
+  index_mat <- (dist_mat + abs(corr_mat) + mean_dif_mat) / (count_mat + 1)
+  
+  return(index_mat)
+}
+```
+
+
+```{r}
+matrix.vectorized <- calc_similarity_vectorized(dados)
+```
+
+
+
+Versão menos vetorizada mas resolvendo o NA:
+
+```{r}
+calc_similarity_vectorized_partial <- function(dados) {
+  n <- nrow(dados)
+  X <- as.matrix(dados)
+  
+  # médias por indivíduo (ignora NAs)
+  row_means <- rowMeans(X, na.rm = TRUE)
+  
+  ## 1. Distância Euclidiana
+  dist_mat <- outer(1:n, 1:n,
+                    Vectorize(function(i, j) {
+                      xi <- X[i, ]
+                      xj <- X[j, ]
+                      valid_idx <- which(!is.na(xi) & !is.na(xj))
+                      if (length(valid_idx) > 0) {
+                        sqrt(sum((xi[valid_idx] - xj[valid_idx])^2))
+                      } else {
+                        NA
+                      }
+                    }))
+  
+  ## 2. Correlação de Pearson
+  corr_mat <- outer(1:n, 1:n,
+                    Vectorize(function(i, j) {
+                      xi <- X[i, ]
+                      xj <- X[j, ]
+                      valid_idx <- which(!is.na(xi) & !is.na(xj))
+                      if (length(valid_idx) > 1) {
+                        num <- sum((xi[valid_idx] - mean(xi[valid_idx])) *
+                                   (xj[valid_idx] - mean(xj[valid_idx])))
+                        den <- sqrt(sum((xi[valid_idx] - mean(xi[valid_idx]))^2)) *
+                               sqrt(sum((xj[valid_idx] - mean(xj[valid_idx]))^2))
+                        if (den == 0) NA else num / den
+                      } else {
+                        NA
+                      }
+                    }))
+  
+  ## 3. Média das diferenças absolutas
+  mean_dif_mat <- outer(1:n, 1:n,
+                        Vectorize(function(i, j) {
+                          xi <- X[i, ]
+                          xj <- X[j, ]
+                          valid_idx <- which(!is.na(xi) & !is.na(xj))
+                          if (length(valid_idx) > 0) {
+                            mean(abs(xi[valid_idx] - xj[valid_idx]))
+                          } else {
+                            NA
+                          }
+                        }))
+  
+  ## 4. Contagem acima do limiar
+  count_mat <- outer(1:n, 1:n,
+                     Vectorize(function(i, j) {
+                       xi <- X[i, ]
+                       xj <- X[j, ]
+                       valid_idx <- which(!is.na(xi) & !is.na(xj))
+                       if (length(valid_idx) > 0) {
+                         threshold <- (mean(xi[valid_idx]) + mean(xj[valid_idx])) / 2
+                         sum((xi[valid_idx] > threshold) & (xj[valid_idx] > threshold))
+                       } else {
+                         NA
+                       }
+                     }))
+  
+  ## 5. Índice composto
+  index_mat <- (dist_mat + abs(corr_mat) + mean_dif_mat) / (count_mat + 1)
+  
+  return(index_mat)
+}
+
+```
+
+
+```{r}
+matrix.vectorized.partial <- calc_similarity_vectorized_partial(dados)
+```
+
+
+
+Tratamento de valores em falta (NA) na vetorização: Na versão vetorizada, verificámos inicialmente que qualquer observação com pelo menos um valor em falta propagava NA para todos os cálculos envolvendo essa linha, devido ao uso de operações matriciais (%*%, outer) que não suportam o argumento na.rm. Para evitar este problema e manter consistência com a versão baseada em loops, ajustámos a função vetorizada de forma a calcular cada métrica apenas nos biomarcadores válidos em comum entre dois indivíduos. Assim, em cada par (𝑖,𝑗), filtrámos os índices sem valores em falta e realizámos os cálculos (distância euclidiana, correlação de Pearson, média das diferenças absolutas e contagem acima do limiar) apenas com os dados disponíveis. Nos casos em que não existia nenhum biomarcador válido em comum, o resultado foi devolvido como NA, refletindo a ausência de informação suficiente. Esta abordagem é equivalente à usada nos loops, onde o argumento na.rm=TRUE permitia ignorar valores em falta em cada cálculo individual. A diferença é que, na vetorização, tivemos de implementar explicitamente a filtragem dos índices válidos para replicar o mesmo comportamento. Desta forma, conseguimos aproveitar a informação parcial sem descartar indivíduos, garantindo que os resultados da versão vetorizada são comparáveis aos da versão com loops.
+
+
+
+
+# 4. Modular Programming -------------------------------------------------------
+
+Looped version:
+
+```{r}
+dist_euclid_manual <- function(xi, xj) {
+  dist_ij <- 0
+  for (k in seq_along(xi)) {
+    if (is.na(xi[k]) || is.na(xj[k])) next
+    dist_ij <- dist_ij + (xi[k] - xj[k])^2
+  }
+  sqrt(dist_ij)
+}
+
+```
+
+```{r}
+corr_manual <- function(xi, xj, xi_mean, xj_mean) {
+  num <- 0
+  den_x <- 0
+  den_y <- 0
+  
+  for (k in seq_along(xi)) {
+    if (is.na(xi[k]) || is.na(xj[k])) next
+    num   <- num   + (xi[k] - xi_mean) * (xj[k] - xj_mean)
+    den_x <- den_x + (xi[k] - xi_mean)^2
+    den_y <- den_y + (xj[k] - xj_mean)^2
+  }
+  
+  denom <- sqrt(den_x) * sqrt(den_y)
+  if (denom == 0) return(NA)
+  num / denom
+}
+
+```
+
+```{r}
+mean_abs_diff_manual <- function(xi, xj, p) {
+  mean_dif_sum <- 0
+  
+  for (k in seq_along(xi)) {
+    if (is.na(xi[k]) || is.na(xj[k])) next
+    mean_dif_sum <- mean_dif_sum + abs(xi[k] - xj[k])
+  }
+  
+  mean_dif_sum / p   
+}
+
+```
+
+```{r}
+count_above_threshold_manual <- function(xi, xj, threshold) {
+  count_ij <- 0
+  
+  for (k in seq_along(xi)) {
+    if (is.na(xi[k]) || is.na(xj[k])) next
+    if (xi[k] > threshold && xj[k] > threshold) {
+      count_ij <- count_ij + 1
+    }
+  }
+  
+  count_ij
+}
+
+```
+
+```{r}
+compute_index_manual <- function(xi, xj) {
+  p <- length(xi)
+  
+  xi_mean <- mean(xi, na.rm = TRUE)
+  xj_mean <- mean(xj, na.rm = TRUE)
+  threshold <- (xi_mean + xj_mean) / 2
+  
+  d  <- dist_euclid_manual(xi, xj)
+  c  <- corr_manual(xi, xj, xi_mean, xj_mean)
+  md <- mean_abs_diff_manual(xi, xj, p)
+  ct <- count_above_threshold_manual(xi, xj, threshold)
+  
+  (d + abs(c) + md) / (ct + 1)
+}
+
+```
+
+```{r}
+calc_similarity_modular_loops <- function(dados) {
+  n <- nrow(dados)
+  S <- matrix(NA, n, n)
+  
+  for (i in 1:n) {
+    xi <- as.numeric(dados[i, ])
+    for (j in 1:n) {
+      xj <- as.numeric(dados[j, ])
+      S[i, j] <- compute_index_manual(xi, xj)
+    }
+  }
+  
+  S
+}
+
+```
+
+```{r}
+matrix.modular.loop <- calc_similarity_modular_loops(dados)
+```
+
+
+
+Fully Vectorized:
+
+
+```{r}
+dist_euclid_matrix <- function(X) {
+  sq <- rowSums(X^2, na.rm = TRUE)
+  cross <- X %*% t(X)
+  dist_sq <- outer(sq, sq, "+") - 2 * cross
+  dist_sq[dist_sq < 0] <- 0
+  sqrt(dist_sq)
+}
+```
+
+```{r}
+correlation_matrix <- function(X) {
+  row_means <- rowMeans(X, na.rm = TRUE)
+  Xc <- sweep(X, 1, row_means)
+  
+  cov_mat <- Xc %*% t(Xc)
+  sd_vec <- sqrt(rowSums(Xc^2, na.rm = TRUE))
+  denom <- outer(sd_vec, sd_vec, "*")
+  
+  corr <- cov_mat / denom
+  corr[denom == 0] <- NA
+  corr
+}
+
+```
+
+```{r}
+mean_abs_diff_matrix <- function(X) {
+  n <- nrow(X); p <- ncol(X)
+  
+  Xi <- array(X, c(n, 1, p))
+  Xj <- array(X, c(1, n, p))
+  
+  Xi_exp <- Xi[, rep(1, n), , drop=FALSE]
+  Xj_exp <- Xj[rep(1, n), , , drop=FALSE]
+  
+  diffs <- abs(Xi_exp - Xj_exp)
+  apply(diffs, c(1, 2), mean, na.rm = TRUE)
+}
+
+```
+
+```{r}
+count_matrix <- function(X) {
+  n <- nrow(X); p <- ncol(X)
+  
+  row_means <- rowMeans(X, na.rm = TRUE)
+  threshold_mat <- outer(row_means, row_means, function(a,b) (a + b)/2)
+  
+  Xi <- array(X, c(n,1,p))
+  Xj <- array(X, c(1,n,p))
+  
+  Xi_exp <- Xi[, rep(1,n), , drop=FALSE]
+  Xj_exp <- Xj[rep(1,n), , , drop=FALSE]
+  
+  thresh_arr <- array(threshold_mat, c(n,n,p))
+  
+  apply((Xi_exp > thresh_arr & Xj_exp > thresh_arr), c(1,2), sum)
+}
+
+```
+
+```{r}
+calc_similarity_modular_vectorized <- function(dados) {
+  X <- as.matrix(dados)
+  
+  dist_mat <- dist_euclid_matrix(X)
+  corr_mat <- correlation_matrix(X)
+  mean_dif_mat <- mean_abs_diff_matrix(X)
+  count_mat <- count_matrix(X)
+  
+  (dist_mat + abs(corr_mat) + mean_dif_mat) / (count_mat + 1)
+}
+
+```
+
+```{r}
+matrix.modular.vectorized <- calc_similarity_modular_vectorized(dados)
+```
+
+
+Modular semi-vectorized:
+
+```{r}
+dist_euclid_na <- function(xi, xj) {
+  valid_idx <- which(!is.na(xi) & !is.na(xj))
+  if (length(valid_idx) > 0) {
+    sqrt(sum((xi[valid_idx] - xj[valid_idx])^2))
+  } else {
+    NA
+  }
+}
+
+```
+
+```{r}
+corr_pearson_na <- function(xi, xj) {
+  valid_idx <- which(!is.na(xi) & !is.na(xj))
+  if (length(valid_idx) > 1) {
+    xi_v <- xi[valid_idx]
+    xj_v <- xj[valid_idx]
+    num <- sum((xi_v - mean(xi_v)) * (xj_v - mean(xj_v)))
+    den <- sqrt(sum((xi_v - mean(xi_v))^2)) * sqrt(sum((xj_v - mean(xj_v))^2))
+    if (den == 0) NA else num / den
+  } else {
+    NA
+  }
+}
+
+```
+
+```{r}
+mean_abs_diff_na <- function(xi, xj) {
+  valid_idx <- which(!is.na(xi) & !is.na(xj))
+  if (length(valid_idx) > 0) {
+    mean(abs(xi[valid_idx] - xj[valid_idx]))
+  } else {
+    NA
+  }
+}
+
+```
+
+```{r}
+count_above_threshold_na <- function(xi, xj) {
+  valid_idx <- which(!is.na(xi) & !is.na(xj))
+  if (length(valid_idx) > 0) {
+    threshold <- (mean(xi[valid_idx]) + mean(xj[valid_idx])) / 2
+    sum((xi[valid_idx] > threshold) & (xj[valid_idx] > threshold))
+  } else {
+    NA
+  }
+}
+
+```
+
+```{r}
+compute_index_na <- function(xi, xj) {
+  d  <- dist_euclid_na(xi, xj)
+  c  <- corr_pearson_na(xi, xj)
+  md <- mean_abs_diff_na(xi, xj)
+  ct <- count_above_threshold_na(xi, xj)
+  (d + abs(c) + md) / (ct + 1)
+}
+
+```
+
+```{r}
+calc_similarity_modular_vectorized_partial <- function(dados) {
+  n <- nrow(dados)
+  X <- as.matrix(dados)
+  index_mat <- matrix(NA, n, n)
+  
+  for (i in 1:n) {
+    xi <- X[i, ]
+    for (j in 1:n) {
+      xj <- X[j, ]
+      index_mat[i, j] <- compute_index_na(xi, xj)
+    }
+  }
+  
+  index_mat
+}
+
+```
+
+```{r}
+matrix.modular.vectorized.partial <- calc_similarity_modular_vectorized_partial(dados)
+```
+
+
+# 5. Visualization of the Results ----------------------------------------------
+
+
+```{r}
+library(ggplot2)
+library(reshape2)
+
+
+# Transformar para formato longo
+df_plot <- melt(matrix.vectorized.partial)
+colnames(df_plot) <- c("Ind1", "Ind2", "Index")
+
+ggplot(df_plot, aes(x = Ind1, y = Ind2, fill = Index)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "plasma", na.value = "grey50") +
+  labs(
+    title = "Heatmap da Matriz de Similaridade",
+    x = "Indivíduo",
+    y = "Indivíduo",
+    fill = "Index"
+  ) +
+  theme_minimal()
+
+ggsave("heatmap.png",
+       width = 12, height = 8, dpi = 300)
+
+```
+
+```{r}
+ggplot(df_plot, aes(x = Index)) +
+  geom_histogram(bins = 60, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  xlim(0,100)
+  labs(title = "Histograma do Índice", x = "Index", y = "Frequência")
+
+```
+
+
+
+
+Histogramas para cada métrica:
+
+```{r}
+# 1. Distância Euclidiana
+dist_mat <- outer(1:nrow(dados), 1:nrow(dados),
+                  Vectorize(function(i, j) dist_euclid_na(as.numeric(dados[i, ]), 
+                                                          as.numeric(dados[j, ]))))
+# 2. Correlação
+corr_mat <- outer(1:nrow(dados), 1:nrow(dados),
+                  Vectorize(function(i, j) corr_pearson_na(as.numeric(dados[i, ]), 
+                                                           as.numeric(dados[j, ]))))
+
+# 3. Média das diferenças absolutas
+mad_mat <- outer(1:nrow(dados), 1:nrow(dados),
+                 Vectorize(function(i, j) mean_abs_diff_na(as.numeric(dados[i, ]), 
+                                                           as.numeric(dados[j, ]))))
+
+# 4. Contagem acima do limiar
+count_mat <- outer(1:nrow(dados), 1:nrow(dados),
+                   Vectorize(function(i, j) count_above_threshold_na(as.numeric(dados[i, ]), 
+                                                                     as.numeric(dados[j, ]))))
+
+```
+
+```{r}
+library(reshape2)
+
+df_dist  <- melt(dist_mat);  names(df_dist)  <- c("Ind1","Ind2","Value")
+df_corr  <- melt(corr_mat);  names(df_corr)  <- c("Ind1","Ind2","Value")
+df_mad   <- melt(mad_mat);   names(df_mad)   <- c("Ind1","Ind2","Value")
+df_count <- melt(count_mat); names(df_count) <- c("Ind1","Ind2","Value")
+
+```
+
+Distancia euclideana:
+```{r}
+a <- ggplot(df_dist, aes(x = Value)) +
+  geom_histogram(bins = 60, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(title = "Histograma da Distância Euclidiana",
+       x = "Distância", y = "Frequência")
+
+```
+
+Correlação de pearson
+```{r}
+a1 <- ggplot(df_corr, aes(x = Value)) +
+  geom_histogram(bins = 60, fill = "darkgreen", color = "white") +
+  theme_minimal() +
+  labs(title = "Histograma da Correlação",
+       x = "Correlação", y = "Frequência")
+
+```
+
+Média das diferenças absolutas
+```{r}
+b <- ggplot(df_mad, aes(x = Value)) +
+  geom_histogram(bins = 60, fill = "orange", color = "white") +
+  theme_minimal() +
+  labs(title = "Histograma da Média das Diferenças Absolutas",
+       x = "Diferença Média", y = "Frequência")
+
+```
+
+Contagem acima do limiar
+```{r}
+c <- ggplot(df_count, aes(x = Value)) +
+  geom_histogram(bins = 60, fill = "purple", color = "white") +
+  theme_minimal() +
+  labs(title = "Histograma da Contagem",
+       x = "Contagem", y = "Frequência")
+
+```
+
+Indice composto
+```{r}
+df_index <- melt(matrix.vectorized.partial)
+colnames(df_index) <- c("Ind1", "Ind2", "Index")
+
+d <- ggplot(df_index, aes(x = Index)) +
+  geom_histogram(bins = 60, fill = "dodgerblue", color = "white") +
+  theme_minimal() +
+  labs(title = "Histograma do Índice Composto",
+       x = "Índice", y = "Frequência")
+
+```
+
+Grid dos histogramas:
+```{r}
+library(patchwork)
+library(gridExtra)
+
+grid <- grid.arrange(
+  a, a1, b,
+  c, d,
+  ncol = 3
+)
+
+ggsave("histogramaslinha.png", 
+       plot = grid,
+       width = 12, height = 8, dpi = 300)
+
+```
+
+
+
+Boxplots para cada métrica:
+
+Distancia euclideana
+```{r}
+e <- ggplot(df_dist, aes(y = Value)) +
+  geom_boxplot(fill = "skyblue", alpha = .7) +
+  theme_minimal() +
+  labs(title = "Boxplot — Distância Euclidiana",
+       y = "Distância")
+
+```
+
+Correlação de Pearson
+```{r}
+f <- ggplot(df_corr, aes(y = Value)) +
+  geom_boxplot(fill = "seagreen", alpha = .7) +
+  theme_minimal() +
+  labs(title = "Boxplot — Correlação de Pearson",
+       y = "Correlação")
+
+```
+
+Média das diferenças absolutas
+```{r}
+g <- ggplot(df_mad, aes(y = Value)) +
+  geom_boxplot(fill = "orange", alpha = .7) +
+  theme_minimal() +
+  labs(title = "Boxplot — Média das Diferenças Absolutas",
+       y = "Diferença Média")
+
+```
+
+Contagem acima do limiar
+```{r}
+h <- ggplot(df_count, aes(y = Value)) +
+  geom_boxplot(fill = "purple", alpha = .7) +
+  theme_minimal() +
+  labs(title = "Boxplot — Contagem Acima do Limiar",
+       y = "Contagem")
+
+```
+
+Indice composto
+```{r}
+i <- ggplot(df_plot, aes(y = Index)) +
+  geom_boxplot(fill = "tomato", alpha = .7) +
+  theme_minimal() +
+  labs(title = "Boxplot do Índice", y = "Index")
+
+```
+
+Grid dos boxplots
+```{r}
+library(patchwork)
+library(gridExtra)
+
+gridboxplots <- grid.arrange(
+  e, f, g,
+  h, i,
+  ncol = 3
+)
+
+ggsave("meu_gridboxplots.png", 
+       plot = gridboxplots,
+       width = 12, height = 8, dpi = 300)
+
+```
+
+
+# 6. Comparison and Performance Analysis ---------------------------------------
+
+
+```{r}
+library(microbenchmark)
+set.seed(123) 
+
+mb_res <- microbenchmark(
+  Loop= calc_similarity_loops(dados),
+  VetorizadoCompleto = calc_similarity_vectorized(dados),
+  VetorizadoParcial = calc_similarity_vectorized_partial(dados),
+  ModularLoop = calc_similarity_modular_loops(dados),
+  ModularVetorizadoCompleto=calc_similarity_modular_vectorized(dados),
+  ModularVetorizadoParcial=calc_similarity_modular_vectorized_partial(dados),
+  times = 10
+)
+autoplot <- autoplot(mb_res)
+
+
+ggsave("autoplot.png", 
+       plot = autoplot,
+       width = 12, height = 8, dpi = 300)
+
+
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+# Converter microbenchmark para data.frame
+df <- as.data.frame(mb_res)
+
+# Criar o gráfico
+ggplot(df, aes(x = expr, y = time / 1e6, fill = expr)) +   # converter ns → ms
+  geom_boxplot(outlier.alpha = 0.5) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 11),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Comparação de Desempenho (microbenchmark)",
+    y = "Tempo (ms)"
+  )
+
+ggsave("autoplot2.png", 
+       width = 12, height = 8, dpi = 300)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+# Converter microbenchmark para data.frame
+df <- as.data.frame(mb_res)
+
+# Plot violin
+ggplot(df, aes(x = expr, y = time / 1e6, fill = expr)) +   # ns → ms
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.12, outlier.alpha = 0.4, color = "black") +
+  coord_flip() +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 11),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Distribuição de Tempos (Violin + Boxplot)",
+    subtitle = "Resultados do microbenchmark",
+    y = "Tempo (ms)"
+  )
+
+ggsave("autoplot31.png", 
+       width = 12, height = 8, dpi = 300)
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+# Converter microbenchmark para data.frame
+df <- as.data.frame(mb_res)
+
+ggplot(df, aes(x = expr, y = time / 1e6, fill = expr)) +   # ns → ms
+  geom_boxplot(outlier.alpha = 0.4) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 11),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Comparação de Desempenho (microbenchmark)",
+    y = "Tempo (ms)"
+  )
+
+ggsave("autoplot4.png", 
+       width = 12, height = 8, dpi = 300)
+```
+
+
+
+
+
+
+
+
+
+
